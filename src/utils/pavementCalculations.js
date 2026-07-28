@@ -1,5 +1,6 @@
 /**
  * 舗装設計施工指針に基づく TA法計算エンジン & データベース
+ * （新設設計 & 既設補修・切削オーバーレイ設計対応）
  */
 
 // 大型車交通量区分の定義
@@ -14,6 +15,15 @@ export const TRAFFIC_CLASSES = [
 // 標準CBRリスト
 export const STANDARD_CBR_VALUES = [2, 3, 4, 6, 8, 12, 20];
 
+// 既設層の健全度評価係数 C_i マスター
+export const CONDITION_COEFFICIENTS = [
+  { value: 1.0, label: '1.0 (健全・目立つ損傷なし)', desc: 'ひび割れや変形がほとんどない状態' },
+  { value: 0.8, label: '0.8 (軽微なひび割れ・すり減り)', desc: '部分的なひび割れ (ひび割れ率 < 20%)' },
+  { value: 0.6, label: '0.6 (中程度のひび割れ・わだち掘れ)', desc: '亀裂や網状ひび割れが発生 (ひび割れ率 20〜40%)' },
+  { value: 0.4, label: '0.4 (著しい破損・変形)', desc: '著しい網状ひび割れ・わだち掘れ (ひび割れ率 > 40%)' },
+  { value: 0.2, label: '0.2 (破砕・機能喪失)', desc: '層としての評価が困難な破砕状態' }
+];
+
 // 指針の目標TA (cm) 標準参照テーブル [TrafficClassId][CBR]
 export const STANDARD_TA_TABLE = {
   N1: { 2: 21, 3: 17, 4: 15, 6: 13, 8: 11, 12: 9, 20: 7 },
@@ -23,7 +33,7 @@ export const STANDARD_TA_TABLE = {
   N5: { 2: 47, 3: 39, 4: 35, 6: 29, 8: 26, 12: 21, 20: 17 },
 };
 
-// 舗装材料マスタ（相対強度係数 a_i とカラー/テクスチャ定義）
+// 舗装材料マスタ
 export const PAVEMENT_MATERIALS = [
   { id: 'dense_asphalt', category: '表層', name: '密粒度アスファルトコンクリート', a: 1.00, minThick: 3, defaultThick: 5, color: '#2c2d30', pattern: 'asphalt_dense' },
   { id: 'gap_asphalt', category: '表層', name: 'ギャップアスファルトコンクリート', a: 1.00, minThick: 3, defaultThick: 4, color: '#35373b', pattern: 'asphalt_dense' },
@@ -43,18 +53,12 @@ export const PAVEMENT_MATERIALS = [
 
 /**
  * 目標TA (cm) の計算
- * @param {string} trafficClass - 'N1'〜'N5'
- * @param {number} cbr - 設計CBR (数値)
- * @param {string} mode - 'formula' (公式算定) | 'table' (標準表参照)
- * @param {number} [customN] - 任意指定の大型車台数 (台/日・方向)
  */
 export function calculateTargetTA(trafficClass, cbr, mode = 'formula', customN = null) {
   const validCBR = Math.max(1, Number(cbr) || 3);
   
   if (mode === 'table') {
-    // テーブル参照モード
     const tableForClass = STANDARD_TA_TABLE[trafficClass] || STANDARD_TA_TABLE['N3'];
-    // 最も近いCBRキーを探す
     const keys = Object.keys(tableForClass).map(Number).sort((a, b) => a - b);
     let closestCBR = keys[0];
     for (const k of keys) {
@@ -64,7 +68,6 @@ export function calculateTargetTA(trafficClass, cbr, mode = 'formula', customN =
     }
     return tableForClass[closestCBR];
   } else {
-    // 公式算定モード: TA = (20.8 * N^0.6) / (CBR^0.6)
     let N = customN;
     if (!N) {
       const clsObj = TRAFFIC_CLASSES.find(c => c.id === trafficClass);
@@ -73,12 +76,12 @@ export function calculateTargetTA(trafficClass, cbr, mode = 'formula', customN =
     const numerator = 20.8 * Math.pow(N, 0.6);
     const denominator = Math.pow(validCBR, 0.6);
     const ta = numerator / denominator;
-    return Math.round(ta * 10) / 10; // 小数点第1位に四捨五入
+    return Math.round(ta * 10) / 10;
   }
 }
 
 /**
- * 設計換算厚 TA' (cm) と全厚 H (cm) の算出
+ * 新設設計: 換算厚 TA' (cm) と全厚 H (cm) の算出
  */
 export function calculatePavementStructure(layers = []) {
   let taPrime = 0;
@@ -113,12 +116,98 @@ export function calculatePavementStructure(layers = []) {
 }
 
 /**
- * CBRと交通量区分に応じた自動推奨層構造を生成
+ * 補修・切削オーバーレイ設計: 既設残存換算厚とオーバーレイ層の合算計算
+ */
+export function calculateMaintenanceStructure(existingLayers = [], cutDepth = 5, overlayLayers = []) {
+  let depthCounter = Number(cutDepth) || 0;
+  let existTaPrime = 0;
+  let remainingExistThickness = 0;
+
+  // 1. 既設層の切削・残存計算
+  const evaluatedExistingLayers = existingLayers.map((layer) => {
+    const mat = PAVEMENT_MATERIALS.find(m => m.id === layer.materialId) || PAVEMENT_MATERIALS[0];
+    const origThick = Number(layer.thickness) || 0;
+    const conditionC = Number(layer.c) || 1.0;
+    const a = layer.a !== undefined ? Number(layer.a) : mat.a;
+
+    let remainingThick = origThick;
+    let cutThick = 0;
+
+    if (depthCounter > 0) {
+      if (depthCounter >= origThick) {
+        cutThick = origThick;
+        remainingThick = 0;
+        depthCounter -= origThick;
+      } else {
+        cutThick = depthCounter;
+        remainingThick = origThick - depthCounter;
+        depthCounter = 0;
+      }
+    }
+
+    // 残存換算厚: a * C * 残存厚
+    const layerExistTa = Math.round(a * conditionC * remainingThick * 100) / 100;
+    existTaPrime += layerExistTa;
+    remainingExistThickness += remainingThick;
+
+    return {
+      ...layer,
+      materialName: mat.name,
+      category: mat.category,
+      a,
+      c: conditionC,
+      origThick,
+      cutThick,
+      remainingThick,
+      layerExistTa,
+      color: mat.color
+    };
+  });
+
+  // 2. オーバーレイ/打換え層の計算
+  let overlayTaPrime = 0;
+  let overlayThickness = 0;
+
+  const evaluatedOverlayLayers = overlayLayers.map((layer, idx) => {
+    const mat = PAVEMENT_MATERIALS.find(m => m.id === layer.materialId) || PAVEMENT_MATERIALS[0];
+    const thickness = Number(layer.thickness) || 0;
+    const a = layer.a !== undefined ? Number(layer.a) : mat.a;
+    const layerTa = Math.round(a * thickness * 100) / 100;
+
+    overlayTaPrime += layerTa;
+    overlayThickness += thickness;
+
+    return {
+      ...layer,
+      id: layer.id || `ov-${idx}`,
+      materialName: mat.name,
+      category: mat.category,
+      a,
+      layerTa,
+      color: mat.color
+    };
+  });
+
+  const totalTaPrime = Math.round((existTaPrime + overlayTaPrime) * 100) / 100;
+  const totalThickness = Math.round((remainingExistThickness + overlayThickness) * 10) / 10;
+
+  return {
+    evaluatedExistingLayers,
+    evaluatedOverlayLayers,
+    existTaPrime: Math.round(existTaPrime * 100) / 100,
+    overlayTaPrime: Math.round(overlayTaPrime * 100) / 100,
+    totalTaPrime,
+    totalThickness,
+    remainingExistThickness
+  };
+}
+
+/**
+ * 自動推奨層構造（新設）
  */
 export function getRecommendedLayers(trafficClass, cbr) {
   const taTarget = calculateTargetTA(trafficClass, cbr, 'formula');
 
-  // 交通量および目標TAに応じたパターン振り分け
   if (trafficClass === 'N1') {
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
@@ -147,7 +236,6 @@ export function getRecommendedLayers(trafficClass, cbr) {
       { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: Math.max(25, Math.ceil((taTarget - 12 - 5.25) / 0.25 / 5) * 5), a: 0.25 }
     ];
   } else {
-    // N5
     return [
       { id: 'rec-1', name: '表層', materialId: 'porous_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: 10, a: 1.00 },
