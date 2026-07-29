@@ -15,7 +15,7 @@ export default function Header({
       try {
         localStorage.removeItem('pavement_design_saved_projects');
       } catch (e) {}
-      window.location.reload(true);
+      window.location.reload();
     }
   };
 

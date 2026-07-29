@@ -73,9 +73,9 @@ export function calculateTargetTA(trafficClass, cbr, mode = 'formula', customN =
       const clsObj = TRAFFIC_CLASSES.find(c => c.id === trafficClass);
       N = clsObj ? clsObj.repN : 625;
     }
-    const numerator = 20.8 * Math.pow(N, 0.6);
-    const denominator = Math.pow(validCBR, 0.6);
-    const ta = numerator / denominator;
+    // STANDARD_TA_TABLE の全35点に対する回帰フィット（べき乗近似、最大誤差 約1.5cm）
+    // TA = 13.362 * N^0.1863 * CBR^-0.4523
+    const ta = 13.362 * Math.pow(N, 0.1863) * Math.pow(validCBR, -0.4523);
     return Math.round(ta * 10) / 10;
   }
 }
@@ -207,16 +207,16 @@ export function getRecommendedLayers(trafficClass, cbr) {
 
   // 下層路盤だけで過大に厚くならないよう、各層の役割に応じた多段階配分アルゴリズム
   if (trafficClass === 'N1') {
-    // N1 (目標TA 9〜21): 表層5cm, 上層路盤10cm(a=0.35), 残りを下層路盤(a=0.25, 15〜30cm)
-    const subgradeThick = Math.min(30, Math.max(15, Math.ceil((taTarget - 5 - 3.5) / 0.25 / 5) * 5));
+    // N1 (目標TA 9〜21): 表層5cm, 上層路盤10cm(a=0.35), 残りを下層路盤(a=0.25, 最小15cm)
+    const subgradeThick = Math.max(15, Math.ceil((taTarget - 5 - 3.5) / 0.25 / 5) * 5);
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '上層路盤', materialId: 'graded_crushed_stone', thickness: 10, a: 0.35 },
       { id: 'rec-3', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: subgradeThick, a: 0.25 }
     ];
   } else if (trafficClass === 'N2') {
-    // N2 (目標TA 11〜25): 表層5cm, 基層5cm, 上層15cm, 下層路盤15〜30cm
-    const subgradeThick = Math.min(30, Math.max(15, Math.ceil((taTarget - 10 - 5.25) / 0.25 / 5) * 5));
+    // N2 (目標TA 11〜25): 表層5cm, 基層5cm, 上層15cm, 下層路盤 最小15cm
+    const subgradeThick = Math.max(15, Math.ceil((taTarget - 10 - 5.25) / 0.25 / 5) * 5);
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: 5, a: 1.00 },
@@ -225,18 +225,18 @@ export function getRecommendedLayers(trafficClass, cbr) {
     ];
   } else if (trafficClass === 'N3') {
     // N3 (目標TA 14〜31):
-    // 必要TAが高い場合、基層を7cmに厚くし、下層路盤の上限を30cmに抑制
+    // 必要TAが高い場合、下層路盤(a=0.25)だけに頼ると過大な厚さになるため基層を7cmに厚くする
     let baseThick = 5;
     let upperRoadbedThick = 15;
     let remTa = taTarget - 10 - 5.25;
 
-    if (remTa > 7.5) { // 下層路盤が30cm超になる場合は基層/上層を強化
+    if (remTa > 7.5) { // 下層路盤が過大に厚くなる場合は基層/上層を強化
       baseThick = 7;
       upperRoadbedThick = 15;
       remTa = taTarget - 12 - 5.25;
     }
 
-    const subgradeThick = Math.min(30, Math.max(15, Math.ceil(remTa / 0.25 / 5) * 5));
+    const subgradeThick = Math.max(20, Math.ceil(remTa / 0.25 / 5) * 5);
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: baseThick, a: 1.00 },
@@ -254,7 +254,7 @@ export function getRecommendedLayers(trafficClass, cbr) {
       remTa = taTarget - 15 - 5.25;
     }
 
-    const subgradeThick = Math.min(35, Math.max(20, Math.ceil(remTa / 0.25 / 5) * 5));
+    const subgradeThick = Math.max(25, Math.ceil(remTa / 0.25 / 5) * 5);
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: baseThick, a: 1.00 },
@@ -273,7 +273,7 @@ export function getRecommendedLayers(trafficClass, cbr) {
       remTa = taTarget - 15 - 12.0;
     }
 
-    const subgradeThick = Math.min(35, Math.max(20, Math.ceil(remTa / 0.25 / 5) * 5));
+    const subgradeThick = Math.max(25, Math.ceil(remTa / 0.25 / 5) * 5);
     return [
       { id: 'rec-1', name: '表層', materialId: 'porous_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: baseThick, a: 1.00 },
