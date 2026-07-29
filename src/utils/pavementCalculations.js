@@ -123,7 +123,6 @@ export function calculateMaintenanceStructure(existingLayers = [], cutDepth = 5,
   let existTaPrime = 0;
   let remainingExistThickness = 0;
 
-  // 1. 既設層の切削・残存計算
   const evaluatedExistingLayers = existingLayers.map((layer) => {
     const mat = PAVEMENT_MATERIALS.find(m => m.id === layer.materialId) || PAVEMENT_MATERIALS[0];
     const origThick = Number(layer.thickness) || 0;
@@ -145,7 +144,6 @@ export function calculateMaintenanceStructure(existingLayers = [], cutDepth = 5,
       }
     }
 
-    // 残存換算厚: a * C * 残存厚
     const layerExistTa = Math.round(a * conditionC * remainingThick * 100) / 100;
     existTaPrime += layerExistTa;
     remainingExistThickness += remainingThick;
@@ -164,7 +162,6 @@ export function calculateMaintenanceStructure(existingLayers = [], cutDepth = 5,
     };
   });
 
-  // 2. オーバーレイ/打換え層の計算
   let overlayTaPrime = 0;
   let overlayThickness = 0;
 
@@ -203,44 +200,85 @@ export function calculateMaintenanceStructure(existingLayers = [], cutDepth = 5,
 }
 
 /**
- * 自動推奨層構造（新設）
+ * 舗装設計施工指針に基づく、現実的かつバランスのとれた標準推奨層構造の自動計算
  */
 export function getRecommendedLayers(trafficClass, cbr) {
   const taTarget = calculateTargetTA(trafficClass, cbr, 'formula');
 
+  // 下層路盤だけで過大に厚くならないよう、各層の役割に応じた多段階配分アルゴリズム
   if (trafficClass === 'N1') {
+    // N1 (目標TA 9〜21): 表層5cm, 上層路盤10cm(a=0.35), 残りを下層路盤(a=0.25, 15〜30cm)
+    const subgradeThick = Math.min(30, Math.max(15, Math.ceil((taTarget - 5 - 3.5) / 0.25 / 5) * 5));
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '上層路盤', materialId: 'graded_crushed_stone', thickness: 10, a: 0.35 },
-      { id: 'rec-3', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: Math.max(15, Math.ceil((taTarget - 5 - 3.5) / 0.25 / 5) * 5), a: 0.25 }
+      { id: 'rec-3', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: subgradeThick, a: 0.25 }
     ];
   } else if (trafficClass === 'N2') {
+    // N2 (目標TA 11〜25): 表層5cm, 基層5cm, 上層15cm, 下層路盤15〜30cm
+    const subgradeThick = Math.min(30, Math.max(15, Math.ceil((taTarget - 10 - 5.25) / 0.25 / 5) * 5));
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: 5, a: 1.00 },
       { id: 'rec-3', name: '上層路盤', materialId: 'graded_crushed_stone', thickness: 15, a: 0.35 },
-      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: Math.max(15, Math.ceil((taTarget - 10 - 5.25) / 0.25 / 5) * 5), a: 0.25 }
+      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: subgradeThick, a: 0.25 }
     ];
   } else if (trafficClass === 'N3') {
+    // N3 (目標TA 14〜31):
+    // 必要TAが高い場合、基層を7cmに厚くし、下層路盤の上限を30cmに抑制
+    let baseThick = 5;
+    let upperRoadbedThick = 15;
+    let remTa = taTarget - 10 - 5.25;
+
+    if (remTa > 7.5) { // 下層路盤が30cm超になる場合は基層/上層を強化
+      baseThick = 7;
+      upperRoadbedThick = 15;
+      remTa = taTarget - 12 - 5.25;
+    }
+
+    const subgradeThick = Math.min(30, Math.max(15, Math.ceil(remTa / 0.25 / 5) * 5));
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
-      { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: 5, a: 1.00 },
-      { id: 'rec-3', name: '上層路盤', materialId: 'graded_crushed_stone', thickness: 15, a: 0.35 },
-      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: Math.max(20, Math.ceil((taTarget - 10 - 5.25) / 0.25 / 5) * 5), a: 0.25 }
+      { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: baseThick, a: 1.00 },
+      { id: 'rec-3', name: '上層路盤', materialId: 'graded_crushed_stone', thickness: upperRoadbedThick, a: 0.35 },
+      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: subgradeThick, a: 0.25 }
     ];
   } else if (trafficClass === 'N4') {
+    // N4 (目標TA 17〜39):
+    let baseThick = 7;
+    let upperRoadbedThick = 15;
+    let remTa = taTarget - 12 - 5.25;
+
+    if (remTa > 7.5) {
+      baseThick = 10;
+      remTa = taTarget - 15 - 5.25;
+    }
+
+    const subgradeThick = Math.min(35, Math.max(20, Math.ceil(remTa / 0.25 / 5) * 5));
     return [
       { id: 'rec-1', name: '表層', materialId: 'dense_asphalt', thickness: 5, a: 1.00 },
-      { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: 7, a: 1.00 },
-      { id: 'rec-3', name: '上層路盤', materialId: 'graded_crushed_stone', thickness: 15, a: 0.35 },
-      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: Math.max(25, Math.ceil((taTarget - 12 - 5.25) / 0.25 / 5) * 5), a: 0.25 }
+      { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: baseThick, a: 1.00 },
+      { id: 'rec-3', name: '上層路盤', materialId: 'graded_crushed_stone', thickness: upperRoadbedThick, a: 0.35 },
+      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: subgradeThick, a: 0.25 }
     ];
   } else {
+    // N5 (目標TA 21〜47): 高機能舗装＋加熱アス安定処理＋粒調砕石＋再生クラッシャーラン
+    let baseThick = 10;
+    let upperMatId = 'hot_asphalt_stabilized'; // 加熱アス安定処理 (a=0.80)
+    let upperThick = 10;
+    let remTa = taTarget - 15 - 8.0;
+
+    if (remTa > 7.5) {
+      upperThick = 15;
+      remTa = taTarget - 15 - 12.0;
+    }
+
+    const subgradeThick = Math.min(35, Math.max(20, Math.ceil(remTa / 0.25 / 5) * 5));
     return [
       { id: 'rec-1', name: '表層', materialId: 'porous_asphalt', thickness: 5, a: 1.00 },
-      { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: 10, a: 1.00 },
-      { id: 'rec-3', name: '上層路盤', materialId: 'hot_asphalt_stabilized', thickness: 10, a: 0.80 },
-      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: Math.max(25, Math.ceil((taTarget - 15 - 8.0) / 0.25 / 5) * 5), a: 0.25 }
+      { id: 'rec-2', name: '基層', materialId: 'coarse_asphalt', thickness: baseThick, a: 1.00 },
+      { id: 'rec-3', name: '上層路盤', materialId: upperMatId, thickness: upperThick, a: 0.80 },
+      { id: 'rec-4', name: '下層路盤', materialId: 'recycled_crushed_stone', thickness: subgradeThick, a: 0.25 }
     ];
   }
 }
